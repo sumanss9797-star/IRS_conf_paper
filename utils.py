@@ -275,8 +275,11 @@ class PrioritizedReplayBuffer(object):
         self.reward[self.ptr] = reward
         self.not_done[self.ptr] = 1. - done
 
+        # BUG FIX: use sumtree.add() (not .update()) so n_entries is incremented.
+        # .update() only updates the priority without incrementing n_entries,
+        # which caused max_priority to always return the fallback 1.0.
         priority = max(self.sumtree.max_priority, 1e-6) ** self.alpha_per
-        self.sumtree.update(self.ptr, priority)
+        self.sumtree.add(priority)   # internally advances ptr and increments n_entries
 
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)
@@ -349,8 +352,9 @@ class BetaPrioritizedReplayBuffer(object):
         self.reward[self.ptr] = reward
         self.not_done[self.ptr] = 1. - done
 
+        # BUG FIX: use sumtree.add() (not .update()) so n_entries is incremented.
         priority = max(self.sumtree.max_priority, 1e-6) ** self.alpha_per
-        self.sumtree.update(self.ptr, priority)
+        self.sumtree.add(priority)   # internally advances ptr and increments n_entries
 
         self.ptr = (self.ptr + 1) % self.max_size
         self.size = min(self.size + 1, self.max_size)

@@ -200,31 +200,38 @@ if __name__ == "__main__":
         episode_time_steps += 1
 
         if args.policy == "SAC":
-            action = agent.select_action(state)
+            raw_action = agent.select_action(state)
         elif "Beta_Space" in args.policy:
-            action, beta = agent.select_action(state, exp_regularization)
+            raw_action, beta = agent.select_action(state, exp_regularization)
         else:
-            action = (agent.select_action(np.array(state)) + np.random.normal(0, max_action * args.exploration_noise, size=action_dim)).clip(-max_action, max_action)
+            raw_action = (agent.select_action(np.array(state)) + np.random.normal(0, max_action * args.exploration_noise, size=action_dim)).clip(-max_action, max_action)
+
+        # env_action is the action actually executed (with novelty transformations applied).
+        # raw_action is what the Actor produced — stored in the replay buffer so the
+        # Critic learns Q(s, raw_action) and the Actor receives valid policy gradients.
+        env_action = raw_action.copy()
 
         # ---- Novelty #1: Hybrid AO — replace G with ZF-optimal beamformer ----
+        # Applied to env_action only; raw_action preserved for replay buffer.
         if args.use_ao:
-            action = optimization.action_with_zf_beamformer(
-                action, env.H_1, env.H_2,
+            env_action = optimization.action_with_zf_beamformer(
+                env_action, env.H_1, env.H_2,
                 args.num_antennas, args.num_users, args.num_RIS_elements,
                 args.power_t
             )
         # -----------------------------------------------------------------------
 
         # ---- Novelty #3: Discrete Phase Shifts — quantize RIS phases ----------
+        # Applied to env_action only; raw_action preserved for replay buffer.
         if args.use_discrete_phases:
-            action = quantize_phase_action(action, args.num_RIS_elements, args.num_phase_bits)
+            env_action = quantize_phase_action(env_action, args.num_RIS_elements, args.num_phase_bits)
         # -----------------------------------------------------------------------
 
         # Take the selected action
         if "Beta_Space" in args.policy:
-            next_state, reward, done, info = env.step(action, beta)
+            next_state, reward, done, info = env.step(env_action, beta)
         else:
-            next_state, reward, done, info = env.step(action)
+            next_state, reward, done, info = env.step(env_action)
 
         mismatch_reward = info["true reward"]
 
@@ -241,11 +248,13 @@ if __name__ == "__main__":
 
         reward = reward - np.mean(instant_rewards)
 
-        # Store data in the experience replay buffer
+        # Store RAW action in replay buffer — Critic learns Q(s, raw_action).
+        # The ZF/DP improvement appears in the reward signal, correctly crediting
+        # the raw action that triggered the env_action's high-reward outcome.
         if "Beta_Space" in args.policy:
-            replay_buffer.add(state, action, beta, next_state, reward, float(done))
+            replay_buffer.add(state, raw_action, beta, next_state, reward, float(done))
         else:
-            replay_buffer.add(state, action, next_state, reward, float(done))
+            replay_buffer.add(state, raw_action, next_state, reward, float(done))
 
         state = next_state
 
