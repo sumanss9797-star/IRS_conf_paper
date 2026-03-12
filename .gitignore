@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+.eggs/
+dist/
+build/
+
+# Large data — Learning Curves (270 seed files) not needed in repo
+Learning Curves/
+
+# Results — large numpy arrays (can be regenerated)
+Results/
+
+# Model checkpoints
+Models/
+
+# Generated plots and reports
+*.png
+*.pdf
+Novelty_Improvement_Report.docx
+
+# Environment
+.env
+*.conda
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
