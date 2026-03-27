@@ -9,7 +9,7 @@ import torch
 import SAC
 import Beta_Space_Exp_SAC
 import utils
-from utils import quantize_phase_action
+from utils import quantize_phase_action, NStepBuffer, BetaNStepBuffer
 import optimization
 
 # Register the custom RIS-MISO environment inline so no external setup is needed
@@ -84,6 +84,17 @@ if __name__ == "__main__":
     parser.add_argument("--num_phase_bits", default=2, type=int, choices=[1, 2, 3],
                         help='Phase resolution in bits — 1/2/3 gives 2/4/8 discrete levels (default: 2)')
 
+    # ------------------------------------------------------------------ #
+    #  Novelty #4: High UTD Ratio + N-step Returns                        #
+    #  Reference: REDQ (Chen et al. 2021), Compound Returns (ICML 2024)  #
+    # ------------------------------------------------------------------ #
+    parser.add_argument("--updates_per_step", default=4, type=int, metavar='U',
+                        help='Number of gradient updates per env step — UTD ratio '
+                             '(default: 4; original paper uses 1)')
+    parser.add_argument("--nstep", default=3, type=int, metavar='N',
+                        help='N-step return horizon: accumulate n transitions '
+                             'before storing in replay buffer (default: 3; original uses 1)')
+
     args = parser.parse_args()
 
     if args.objective_function == "mismatch":
@@ -98,7 +109,8 @@ if __name__ == "__main__":
     dp_label = f"ON ({args.num_phase_bits}-bit)" if args.use_discrete_phases else "OFF"
     print("-----------------------------------------------------------------------------")
     print(f"Policy: {args.policy}, Env: {args.env}, Seed: {args.seed}, Scenario: {args.objective_function.capitalize()}")
-    print(f"Novelties: AO={'ON' if args.use_ao else 'OFF'}, PER={'ON' if args.use_per else 'OFF'}, DP={dp_label}")
+    print(f"Novelties: AO={'ON' if args.use_ao else 'OFF'}, PER={'ON' if args.use_per else 'OFF'}, "
+          f"DP={dp_label}, UTD={args.updates_per_step}x, N-step={args.nstep}")
     print("-----------------------------------------------------------------------------")
 
     # Encode novelty flags in the output filename so runs are distinguishable
@@ -106,6 +118,8 @@ if __name__ == "__main__":
     if args.use_ao:  novelty_suffix += "_AO"
     if args.use_per: novelty_suffix += "_PER"
     if args.use_discrete_phases: novelty_suffix += f"_DP{args.num_phase_bits}"
+    if args.updates_per_step != 1: novelty_suffix += f"_UTD{args.updates_per_step}"
+    if args.nstep > 1:             novelty_suffix += f"_NS{args.nstep}"
     file_name = f"{args.policy}{novelty_suffix}_{args.objective_function}_{args.seed}"
 
     save_path = f"Beta_min. = {args.beta_min}, K = {args.num_users}, M = {args.num_antennas}, N = {args.num_RIS_elements}, P_t = {float(args.power_t)}"
@@ -165,15 +179,19 @@ if __name__ == "__main__":
     if args.policy == "SAC":
         agent = SAC.SAC(**agent_kwargs)
         if args.use_per:
-            replay_buffer = utils.PrioritizedReplayBuffer(state_dim, action_dim, max_size=args.buffer_size)
+            _raw_buf = utils.PrioritizedReplayBuffer(state_dim, action_dim, max_size=args.buffer_size)
         else:
-            replay_buffer = utils.ExperienceReplayBuffer(state_dim, action_dim, max_size=args.buffer_size)
+            _raw_buf = utils.ExperienceReplayBuffer(state_dim, action_dim, max_size=args.buffer_size)
+        # ---- Novelty #4: wrap raw buffer with N-step accumulator ----
+        replay_buffer = NStepBuffer(_raw_buf, n=args.nstep, gamma=float(args.discount))
     elif args.policy == "Beta_Space_Exp_SAC":
         agent = Beta_Space_Exp_SAC.Beta_Space_Exp_SAC(**agent_kwargs, beta_min=args.beta_min)
         if args.use_per:
-            replay_buffer = utils.BetaPrioritizedReplayBuffer(state_dim, action_dim, args.num_RIS_elements, args.buffer_size)
+            _raw_buf = utils.BetaPrioritizedReplayBuffer(state_dim, action_dim, args.num_RIS_elements, args.buffer_size)
         else:
-            replay_buffer = utils.BetaExperienceReplayBuffer(state_dim, action_dim, args.num_RIS_elements, args.buffer_size)
+            _raw_buf = utils.BetaExperienceReplayBuffer(state_dim, action_dim, args.num_RIS_elements, args.buffer_size)
+        # ---- Novelty #4: wrap raw buffer with N-step accumulator ----
+        replay_buffer = BetaNStepBuffer(_raw_buf, n=args.nstep, gamma=float(args.discount))
     else:
         raise NotImplementedError("invalid algorithm name")
 
@@ -266,16 +284,20 @@ if __name__ == "__main__":
             if args.save_model:
                 agent.save(f"./Models/{save_path}/{file_name}")
 
-        # Train the agent after collecting sufficient samples
-        if "Beta_Space" in args.policy:
-            td_errors, per_indices = agent.update_parameters(replay_buffer, exp_regularization, args.batch_size)
-        else:
-            td_errors, per_indices = agent.update_parameters(replay_buffer, args.batch_size)
+        # Train the agent — Novelty #4: High UTD ratio
+        # Perform multiple gradient updates per env step (default 4 vs original 1)
+        # This reuses collected data more efficiently — proven to dramatically
+        # improve sample efficiency (REDQ/DroQ papers, 2021-2024).
+        if replay_buffer.size >= args.batch_size:
+            for _ in range(args.updates_per_step):
+                if "Beta_Space" in args.policy:
+                    td_errors, per_indices = agent.update_parameters(replay_buffer, exp_regularization, args.batch_size)
+                else:
+                    td_errors, per_indices = agent.update_parameters(replay_buffer, args.batch_size)
 
-        # ---- Novelty #2: PER — update priorities with exact TD errors ----
-        if args.use_per and per_indices is not None and hasattr(replay_buffer, 'update_priorities'):
-            replay_buffer.update_priorities(per_indices, td_errors)
-        # -----------------------------------------------------------
+                # ---- Novelty #2: PER — update priorities with exact TD errors ----
+                if args.use_per and per_indices is not None and hasattr(replay_buffer, 'update_priorities'):
+                    replay_buffer.update_priorities(per_indices, td_errors)
 
         if args.linear_schedule_exp_regularization:
             exp_regularization = args.exp_regularization_term - (args.exp_regularization_term * (t / args.max_time_steps))

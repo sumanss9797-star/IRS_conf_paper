@@ -393,3 +393,157 @@ class BetaPrioritizedReplayBuffer(object):
         for idx, td_error in zip(indices, td_errors):
             priority = (abs(float(td_error)) + 1e-6) ** self.alpha_per
             self.sumtree.update(int(idx), priority)
+
+
+# ---------------------------------------------------------------------------
+# N-step Return Wrappers  — Novelty #4
+# Reference: REDQ (Chen et al. 2021), Improved SAC (Shil et al. 2023),
+#            Compound Returns (ICML 2024)
+#
+# These wrappers intercept transitions before they reach the replay buffer.
+# They accumulate a sliding window of the last n (s,a,r) tuples and compute
+# the discounted n-step cumulative reward:
+#       R_n = r_t + γ·r_{t+1} + γ²·r_{t+2} + ... + γ^{n-1}·r_{t+n-1}
+# The transition ultimately stored is (s_t, a_t, R_n, s_{t+n}, done),
+# replacing the 1-step TD target with a much lower-bias n-step estimate.
+#
+# Lower bias in the Bellman target means the Critic converges faster and
+# to more accurate values — particularly impactful when paired with a
+# high Update-to-Data (UTD) ratio (see main.py --updates_per_step).
+# ---------------------------------------------------------------------------
+
+class NStepBuffer:
+    """
+    N-step return pre-processing wrapper for ExperienceReplayBuffer /
+    PrioritizedReplayBuffer (SAC variant).
+
+    Usage:
+        nstep_buf = NStepBuffer(main_replay_buffer, n=3, gamma=1.0)
+        # In training loop, replace replay_buffer.add(...) with:
+        nstep_buf.add(state, raw_action, next_state, reward, done)
+        # At episode end (or periodically) flush remaining transitions:
+        nstep_buf.flush()
+    """
+
+    def __init__(self, replay_buffer, n=3, gamma=1.0):
+        """
+        Args:
+            replay_buffer : the underlying ExperienceReplayBuffer or
+                            PrioritizedReplayBuffer to push completed
+                            n-step transitions into.
+            n             : number of steps to accumulate (default 3).
+            gamma         : discount factor (default 1.0, matching paper).
+        """
+        self.buf    = replay_buffer
+        self.n      = n
+        self.gamma  = gamma
+        self._queue = []          # circular accumulation list
+
+    def add(self, state, action, next_state, reward, done):
+        """Accept a 1-step transition; push to buffer when n steps accumulated."""
+        self._queue.append((state, action, next_state, reward, done))
+
+        if len(self._queue) >= self.n:
+            self._push_nstep()
+
+        # If episode ended, flush everything remaining
+        if done:
+            self.flush()
+
+    def _push_nstep(self):
+        """Compute n-step return for oldest entry and push to main buffer."""
+        # state and action come from the oldest (first) entry
+        s0, a0, _, _, _ = self._queue[0]
+
+        # Accumulate discounted rewards over up to n steps
+        R = 0.0
+        for k, (_, _, _, r_k, d_k) in enumerate(self._queue[:self.n]):
+            R += (self.gamma ** k) * r_k
+            if d_k:                   # episode ended inside the window
+                # next_state is the terminating next_state
+                _, _, sn, _, dn = self._queue[k]
+                self.buf.add(s0, a0, sn, R, float(d_k))
+                self._queue.pop(0)
+                return
+
+        # All n steps are non-terminal: bootstrap from s_{t+n}
+        _, _, sn, _, dn = self._queue[self.n - 1]
+        self.buf.add(s0, a0, sn, R, float(dn))
+        self._queue.pop(0)
+
+    def flush(self):
+        """Push all remaining transitions with whatever steps are available."""
+        while self._queue:
+            self._push_nstep()
+            if len(self._queue) == 0:
+                break
+
+    # Proxy attribute/method access to the underlying buffer
+    def sample(self, *args, **kwargs):
+        return self.buf.sample(*args, **kwargs)
+
+    def update_priorities(self, *args, **kwargs):
+        if hasattr(self.buf, 'update_priorities'):
+            return self.buf.update_priorities(*args, **kwargs)
+
+    @property
+    def size(self):
+        return self.buf.size
+
+
+class BetaNStepBuffer:
+    """
+    N-step return wrapper for BetaExperienceReplayBuffer /
+    BetaPrioritizedReplayBuffer (Beta-Space-Exp-SAC variant).
+
+    The beta amplitude vector is taken from the oldest transition in the
+    window (consistent with the action representation).
+    """
+
+    def __init__(self, replay_buffer, n=3, gamma=1.0):
+        self.buf    = replay_buffer
+        self.n      = n
+        self.gamma  = gamma
+        self._queue = []
+
+    def add(self, state, action, beta, next_state, reward, done):
+        self._queue.append((state, action, beta, next_state, reward, done))
+
+        if len(self._queue) >= self.n:
+            self._push_nstep()
+
+        if done:
+            self.flush()
+
+    def _push_nstep(self):
+        s0, a0, b0, _, _, _ = self._queue[0]
+
+        R = 0.0
+        for k, (_, _, _, _, r_k, d_k) in enumerate(self._queue[:self.n]):
+            R += (self.gamma ** k) * r_k
+            if d_k:
+                _, _, _, sn, _, dn = self._queue[k]
+                self.buf.add(s0, a0, b0, sn, R, float(d_k))
+                self._queue.pop(0)
+                return
+
+        _, _, _, sn, _, dn = self._queue[self.n - 1]
+        self.buf.add(s0, a0, b0, sn, R, float(dn))
+        self._queue.pop(0)
+
+    def flush(self):
+        while self._queue:
+            self._push_nstep()
+            if len(self._queue) == 0:
+                break
+
+    def sample(self, *args, **kwargs):
+        return self.buf.sample(*args, **kwargs)
+
+    def update_priorities(self, *args, **kwargs):
+        if hasattr(self.buf, 'update_priorities'):
+            return self.buf.update_priorities(*args, **kwargs)
+
+    @property
+    def size(self):
+        return self.buf.size

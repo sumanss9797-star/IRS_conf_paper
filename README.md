@@ -6,11 +6,23 @@
 
 ---
 
-## What's New (Our Contributions)
+## What's New (Our Contributions — 4 Novelties)
 
-This repository extends the original β-SAC codebase with **three novel algorithmic improvements**:
+This repository extends the original β-SAC codebase with **four novel algorithmic improvements**:
 
 ### Novelty #1 — Hybrid AO + DRL (`--use_ao`)
+Replaces the DRL-learned beamforming matrix **G** with a closed-form **Zero-Forcing (ZF)** solution at each step.
+
+### Novelty #2 — Prioritized Experience Replay (`--use_per`)
+SumTree-based PER buffer sampling proportional to TD error with IS-weight correction.
+
+### Novelty #3 — Discrete Phase Shifts (`--use_discrete_phases`)
+Quantizes RIS phases to **2^B discrete hardware levels** (1/2/3-bit), modeling real PIN diode/varactor constraints.
+
+### Novelty #4 — High UTD Ratio + N-step Returns (`--updates_per_step`, `--nstep`) ⭐ New
+**High Update-to-Data (UTD) ratio**: performs multiple gradient updates per env step (default: 4×), proven to dramatically improve sample efficiency (REDQ, Chen et al. 2021; CrossQ, 2024).  
+**N-step returns**: accumulates n transitions before storing in replay buffer — lower-bias Bellman targets for faster convergence (default: 3-step).
+
 Replaces the DRL-learned beamforming matrix **G** with a closed-form **Zero-Forcing (ZF)** solution at each step. Given fixed RIS phases **Φ** from the DRL agent, the ZF precoder completely nulls inter-user interference:
 
 ```
