@@ -92,8 +92,11 @@ if __name__ == "__main__":
                         help='Number of gradient updates per env step — UTD ratio '
                              '(default: 4; original paper uses 1)')
     parser.add_argument("--nstep", default=3, type=int, metavar='N',
-                        help='N-step return horizon: accumulate n transitions '
-                             'before storing in replay buffer (default: 3; original uses 1)')
+                        help='N-step return horizon (default: 3; original uses 1)')
+    parser.add_argument("--use_layer_norm", default=False,
+                        type=lambda x: x.lower() != 'false',
+                        help='Use LayerNorm + Dropout on Critic networks — DroQ-style '
+                             'regularization for stable high-UTD training (default: False)')
 
     args = parser.parse_args()
 
@@ -110,7 +113,8 @@ if __name__ == "__main__":
     print("-----------------------------------------------------------------------------")
     print(f"Policy: {args.policy}, Env: {args.env}, Seed: {args.seed}, Scenario: {args.objective_function.capitalize()}")
     print(f"Novelties: AO={'ON' if args.use_ao else 'OFF'}, PER={'ON' if args.use_per else 'OFF'}, "
-          f"DP={dp_label}, UTD={args.updates_per_step}x, N-step={args.nstep}")
+          f"DP={dp_label}, UTD={args.updates_per_step}x, N-step={args.nstep}, "
+          f"LayerNorm={'ON' if args.use_layer_norm else 'OFF'}")
     print("-----------------------------------------------------------------------------")
 
     # Encode novelty flags in the output filename so runs are distinguishable
@@ -120,6 +124,7 @@ if __name__ == "__main__":
     if args.use_discrete_phases: novelty_suffix += f"_DP{args.num_phase_bits}"
     if args.updates_per_step != 1: novelty_suffix += f"_UTD{args.updates_per_step}"
     if args.nstep > 1:             novelty_suffix += f"_NS{args.nstep}"
+    if args.use_layer_norm:        novelty_suffix += "_LN"
     file_name = f"{args.policy}{novelty_suffix}_{args.objective_function}_{args.seed}"
 
     save_path = f"Beta_min. = {args.beta_min}, K = {args.num_users}, M = {args.num_antennas}, N = {args.num_RIS_elements}, P_t = {float(args.power_t)}"
@@ -172,7 +177,8 @@ if __name__ == "__main__":
         "automatic_entropy_tuning": args.automatic_entropy_tuning,
         "device": device,
         "discount": args.discount,
-        "tau": args.tau
+        "tau": args.tau,
+        "use_layer_norm": args.use_layer_norm,   # Novelty #5
     }
 
     # Initialize the algorithm

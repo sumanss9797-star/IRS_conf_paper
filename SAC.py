@@ -63,6 +63,51 @@ class Critic(nn.Module):
         return x1, x2
 
 
+class LayerNormCritic(nn.Module):
+    """
+    Critic with Layer Normalization + Dropout after each hidden layer.
+    Reference: DroQ (Hiraoka et al. 2021) — stabilises high-UTD training
+               by preventing Q-value overestimation / gradient explosion.
+    The original Critic class is kept for backward compatibility.
+    """
+    def __init__(self, num_inputs, num_actions, hidden_dim, dropout_p=0.01):
+        super(LayerNormCritic, self).__init__()
+
+        inp = num_inputs + num_actions
+
+        # Q1 with LayerNorm + Dropout
+        self.q1 = nn.Sequential(
+            nn.Linear(inp, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(p=dropout_p),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(p=dropout_p),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        # Q2 with LayerNorm + Dropout
+        self.q2 = nn.Sequential(
+            nn.Linear(inp, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(p=dropout_p),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, hidden_dim),
+            nn.LayerNorm(hidden_dim),
+            nn.Dropout(p=dropout_p),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1),
+        )
+
+        self.apply(weights_init_)
+
+    def forward(self, state, action):
+        xu = torch.cat([state, action], 1)
+        return self.q1(xu), self.q2(xu)
+
+
 class GaussianPolicy(nn.Module):
     def __init__(self, num_inputs, num_actions, hidden_dim, M, N, K, power_t, device, action_space=None):
         super(GaussianPolicy, self).__init__()
@@ -184,19 +229,15 @@ class GaussianPolicy(nn.Module):
 class SAC(object):
     def __init__(self, state_dim,
                  action_space,
-                 M,
-                 N,
-                 K,
-                 power_t,
-                 actor_lr,
-                 critic_lr,
-                 policy_type,
-                 alpha,
+                 M, N, K, power_t,
+                 actor_lr, critic_lr,
+                 policy_type, alpha,
                  target_update_interval,
                  automatic_entropy_tuning,
                  device,
                  discount=0.99,
-                 tau=0.001):
+                 tau=0.001,
+                 use_layer_norm=False):
 
         power_t = 10 ** (power_t / 10)
 
@@ -217,11 +258,11 @@ class SAC(object):
 
         self.updates = 0
 
-        # Initialize critic networks and optimizer
-        self.critic = Critic(state_dim, action_space.shape[0], hidden_size).to(device=self.device)
+        # Initialize critic networks — Novelty #5: LayerNorm critics when enabled
+        CriticCls = LayerNormCritic if use_layer_norm else Critic
+        self.critic        = CriticCls(state_dim, action_space.shape[0], hidden_size).to(device=self.device)
+        self.critic_target = CriticCls(state_dim, action_space.shape[0], hidden_size).to(self.device)
         self.critic_optimizer = Adam(self.critic.parameters(), lr=critic_lr)
-        self.critic_target = Critic(state_dim, action_space.shape[0], hidden_size).to(self.device)
-
         hard_update(self.critic_target, self.critic)
 
         # Initialize actor network and optimizer

@@ -6,6 +6,7 @@ from torch.optim import Adam
 from torch.distributions import Normal
 
 from utils import soft_update, hard_update, weights_init_
+from SAC import LayerNormCritic  # Novelty #5: reuse LayerNorm critic
 
 # Implementation of the Beta-Space Exploration algorithm based on the Soft Actor-Critic algorithm (SAC)
 
@@ -200,7 +201,8 @@ class Beta_Space_Exp_SAC(object):
                  device,
                  beta_min=0.6,
                  discount=0.99,
-                 tau=0.001):
+                 tau=0.001,
+                 use_layer_norm=False):
 
         power_t = 10 ** (power_t / 10)
 
@@ -221,11 +223,11 @@ class Beta_Space_Exp_SAC(object):
 
         self.updates = 0
 
-        # Initialize critic networks and optimizer
-        self.critic = Critic(state_dim, action_space.shape[0], hidden_size).to(device=self.device)
+        # Initialize critic networks — Novelty #5: LayerNorm critics when enabled
+        CriticCls = LayerNormCritic if use_layer_norm else Critic
+        self.critic        = CriticCls(state_dim, action_space.shape[0], hidden_size).to(device=self.device)
+        self.critic_target = CriticCls(state_dim, action_space.shape[0], hidden_size).to(self.device)
         self.critic_optimizer = Adam(self.critic.parameters(), lr=critic_lr)
-        self.critic_target = Critic(state_dim, action_space.shape[0], hidden_size).to(self.device)
-
         hard_update(self.critic_target, self.critic)
 
         # Initialize actor network and optimizer
