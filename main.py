@@ -253,9 +253,9 @@ if __name__ == "__main__":
 
         # Take the selected action
         if "Beta_Space" in args.policy:
-            next_state, reward, done, info = env.step(env_action, beta)
+            next_state, reward, done, info = env.unwrapped.step(env_action, beta)
         else:
-            next_state, reward, done, info = env.step(env_action)
+            next_state, reward, done, info = env.unwrapped.step(env_action)
 
         mismatch_reward = info["true reward"]
 
