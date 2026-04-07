@@ -130,10 +130,9 @@ if __name__ == "__main__":
     save_path = f"Beta_min. = {args.beta_min}, K = {args.num_users}, M = {args.num_antennas}, N = {args.num_RIS_elements}, P_t = {float(args.power_t)}"
 
     if args.save_model and not os.path.exists(f"./Models/{save_path}"):
-        os.makedirs(f"./Models/{save_path}")
+        os.makedirs(f"./Models/{save_path}", exist_ok=True)
 
-    if not os.path.exists(f"./Results/{save_path}"):
-        os.makedirs(f"./Results/{save_path}")
+    os.makedirs(f"./Results/{save_path}", exist_ok=True)
 
     environment_kwargs = {
         "num_antennas": args.num_antennas,
